@@ -8,7 +8,9 @@ Skincare shoppers face a paradox of choice: thousands of products, each promisin
 
 ## The Solution
 
-This system reads **238,929 customer reviews** across **8,494 Sephora skincare products** and learns a vocabulary of real user language — phrases like "cleared my cystic acne", "felt greasy on my oily skin", or "reduced my redness overnight". When a user selects their skin type, concern, and product category, the engine matches their profile against this review-derived vocabulary and returns the top 10 products whose aggregate review language most closely aligns with their needs.
+This system reads **238,929 customer reviews** across **8,494 Sephora skincare products** and learns a vocabulary of real user language — phrases like "cleared my cystic acne", "felt greasy on my oily skin", or "reduced my redness overnight". When a user selects their skin type, concern, and product category, the engine matches their profile against this review-derived vocabulary and returns the top 10 products.
+
+Ranking blends two signals: **TF-IDF cosine similarity** (topical match between the profile query and a product's aggregated reviews) and a **Logistic Regression classifier** trained on review-level `is_recommended` labels (a learned quality signal derived from whether real reviewers recommended the product). Both signals are min-max normalized within each profile's candidate set and combined as `0.7 × cosine + 0.3 × classifier`, so a recommendation requires a product to be *both* topically relevant and positively received.
 
 The recommendations are grounded in **collective user experience**, not marketing claims.
 
@@ -37,11 +39,19 @@ Transformer embeddings capture semantic similarity ("moisturizing" ≈ "hydratin
 Sephora SQLite DB
        │
        ▼
-┌─────────────────┐     ┌──────────────────┐     ┌───────────────────┐
-│  Aggregate       │────▶│  Fit TF-IDF       │────▶│  Precompute       │
-│  Reviews         │     │  Vectorizer       │     │  Top-10 per       │
-│  per Product     │     │  (10K features)   │     │  Profile (×210)   │
-└─────────────────┘     └──────────────────┘     └───────┬───────────┘
+┌─────────────────┐     ┌──────────────────┐
+│  Aggregate       │────▶│  Fit TF-IDF       │─────┐
+│  Reviews         │     │  Vectorizer       │     │
+│  per Product     │     │  (10K features)   │     │
+└─────────────────┘     └──────────┬───────┘     │
+                                   │              │
+                                   ▼              ▼
+                        ┌──────────────────┐  ┌────────────────────┐
+                        │  Fit LR on       │  │  Precompute Top-10 │
+                        │  review-level    │─▶│  per Profile (×210)│
+                        │  is_recommended  │  │  — blend cosine +  │
+                        └──────────────────┘  │    classifier      │
+                                              └──────────┬─────────┘
                                                          │
                                                          ▼
                                                   ┌─────────────┐
@@ -79,8 +89,10 @@ skincare-recommender/
 │   │   └── build_profiles.py       # Generate 210 skin-profile queries
 │   ├── modeling/
 │   │   ├── fit_tfidf.py            # Fit vectorizer, save .pkl + .npz
+│   │   ├── fit_classifier.py       # Train LR on review-level is_recommended
+│   │   ├── score_products.py       # Per (product, skin_type) LR log-odds → parquet
 │   │   ├── compute_similarity.py   # Cosine sim with category masking
-│   │   └── precompute_all.py       # Loop all profiles → recommendations.csv
+│   │   └── precompute_all.py       # Blend cosine + classifier, write recommendations.csv
 │   ├── database/
 │   │   ├── schema.sql              # PostgreSQL CREATE TABLE + index
 │   │   └── load_rds.py             # Bulk-load products + recs into RDS
@@ -124,27 +136,37 @@ python -m src.processing.build_profiles --env local
 # Step 3 — Fit TF-IDF vectorizer on aggregated corpus
 python -m src.modeling.fit_tfidf --env local
 
-# Step 4 — Precompute top-10 recommendations per profile
+# Step 4 — Train the Logistic Regression classifier on is_recommended
+python -m src.modeling.fit_classifier --env local
+
+# Step 5 — Score every (product_id, skin_type) with the trained classifier
+python -m src.modeling.score_products --env local
+
+# Step 6 — Precompute blended top-10 recommendations per profile
 python -m src.modeling.precompute_all --env local
 
-# Step 5 — Create RDS schema and load data
+# Step 7 — Create RDS schema and load data
 python -m src.database.load_rds --env local
 
-# Step 6 — Launch dashboard
+# Step 8 — Launch dashboard
 streamlit run src/dashboard/app.py
 ```
 
 ## How It Works
 
-1. **Aggregate reviews:** All review text for each product is concatenated into a single document, creating one text corpus entry per product (8,494 documents).
+1. **Aggregate reviews:** All review text for each product is concatenated into a single document, creating one text corpus entry per product.
 
 2. **Fit TF-IDF:** A vectorizer (unigrams + bigrams, 10K features, sublinear TF, min_df=2) is fitted on the corpus. Each product becomes a sparse vector in a 10,000-dimensional term space.
 
-3. **Build profile queries:** For each of 210 skin profile combinations, a natural-language query is constructed using expanded concern terms (e.g., "acne" → "acne breakouts pimples blemishes clogged pores").
+3. **Train the Logistic Regression classifier:** LR is fit on review-level rows using `is_recommended` (1/0) as the label and the TF-IDF vectorizer above to transform each review's text. Held-out AUC is 0.9612 and F1 on the negative class is 0.7479 on a 20% stratified test split.
 
-4. **Compute similarity:** Each query is transformed through the fitted vectorizer and compared against the product matrix using cosine similarity. Products are filtered by category — a moisturizer query only ranks moisturizers — and the top 10 are kept.
+4. **Score products per skin type:** For each `(product_id, skin_type)` combination (plus an "overall" bucket used as a fallback for skin types missing from the data), reviews are aggregated and the classifier's `decision_function` produces a log-odds score. Log-odds are used instead of `predict_proba` because aggregating many positive-leaning reviews saturates probabilities near 1.0 and flattens discriminative signal.
 
-5. **Store and serve:** The 2,100 recommendation rows are loaded into RDS PostgreSQL. The Streamlit dashboard queries RDS by skin profile and renders a ranked card grid with product name, brand, price, average rating, and similarity score.
+5. **Build profile queries:** For each of 210 skin profile combinations, a natural-language query is constructed using expanded concern terms (e.g., "acne" → "acne breakouts pimples blemishes clogged pores").
+
+6. **Blend and rank:** Each query is transformed through the TF-IDF vectorizer and compared against the product matrix using cosine similarity. Products are filtered to the profile's category. Within that candidate set, cosine sims and classifier log-odds are **both min-max normalized to [0, 1]**, then combined as `0.7 × norm_cosine + 0.3 × norm_classifier`. The top 10 by combined score are kept.
+
+7. **Store and serve:** The 2,100 recommendation rows (210 profiles × 10) are loaded into RDS PostgreSQL with the blended score in `similarity_score`. The Streamlit dashboard queries RDS by skin profile and renders a ranked card grid with product name, brand, price, average rating, and match score.
 
 ## Dashboard
 
@@ -166,13 +188,18 @@ The test suite validates that cosine similarity ranking returns expected product
 
 ## Model Validation
 
-A Logistic Regression classifier was trained on TF-IDF features as a baseline signal check, achieving AUC 0.9816 and F1 0.79 on the negative class. This confirmed that review text carries strong discriminative signal for product quality — validating TF-IDF as the right feature representation. The classifier itself is not part of the deployed system; the production model is the cosine similarity recommender described above.
+The deployed system combines two components, each evaluated on its own terms:
+
+- **TF-IDF + cosine similarity (ranking signal):** validated by inspecting top-10 outputs across representative profiles and by per-profile score spread after blending.
+- **Logistic Regression classifier (quality signal):** held-out **AUC 0.9612** and **F1 = 0.7479 on the negative class** on a 20% stratified test split of 284K labeled review rows. `class_weight='balanced'` is used because the positive class (`is_recommended=1`) makes up ~84% of rows.
+
+An earlier exploratory LR baseline (AUC 0.9816 on a different split) was the validation step that confirmed review text carries strong signal and motivated promoting the classifier from context-only into an **active ranking component** blended with cosine similarity at weight 0.3.
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| ML | scikit-learn (TF-IDF), scipy (sparse matrices, cosine similarity) |
+| ML | scikit-learn (TF-IDF, LogisticRegression), scipy (sparse matrices, cosine similarity) |
 | Data | pandas, pyarrow (parquet I/O) |
 | Database | PostgreSQL on AWS RDS, psycopg2 |
 | Dashboard | Streamlit |

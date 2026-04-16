@@ -227,15 +227,10 @@ def render_card(row: pd.Series) -> str:
 with st.sidebar:
     st.markdown("### Your skin profile")
     st.caption("Tell us about your skin and we'll find matching products.")
-    skin_type = st.selectbox("Skin type", SKIN_TYPES)
-    skin_concern = st.selectbox("Primary concern", SKIN_CONCERNS)
+    skin_type = st.selectbox("Skin type", SKIN_TYPES, format_func=lambda s: s.title())
+    skin_concern = st.selectbox("Primary concern", SKIN_CONCERNS, format_func=lambda s: s.title())
     category = st.selectbox("Product category", CATEGORIES)
     submitted = st.button("Find my products", type="primary", use_container_width=True)
-    st.markdown("---")
-    st.caption(
-        "Powered by TF-IDF + cosine similarity over 238K Sephora reviews. "
-        "Recommendations are precomputed for 210 skin profiles."
-    )
 
 
 st.markdown(
@@ -243,7 +238,7 @@ st.markdown(
     <div class="hero">
         <div class="subtitle">Personalized Skincare Recommendations</div>
         <h1>The Glow Lab</h1>
-        <p>Top 10 products based on skin profile and conditions</p>
+        <p>Skincare picks grounded in what people like you actually said.</p>
     </div>
     """,
     unsafe_allow_html=True,
