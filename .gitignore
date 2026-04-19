@@ -1,8 +1,13 @@
+# Environments & secrets
 .env
+
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
 .ipynb_checkpoints/
+
+# Data & model artifacts (large or regenerable)
 data/processed/*
 !data/processed/.gitkeep
 data/raw/*
@@ -10,3 +15,28 @@ data/raw/*
 *.pkl
 *.npz
 *.parquet
+
+# Editor & OS
+.DS_Store
+.vscode/
+.idea/
+
+# Claude Code session data
+.claude/
+
+# Private/dev notes and prompts (kept locally, not in public repo)
+CLAUDE.md
+instruction_prompt.md
+notebooks/Memo2.md
+notebooks/mlprompt1.md
+
+# Course-specific deliverables (kept locally, not in public repo)
+Project_Update_*.md
+Project_Update_*.docx
+scripts/generate_update*_docx.py
+
+# Binary duplicates of Markdown docs
+docs/*.docx
+
+# Logs
+*.log

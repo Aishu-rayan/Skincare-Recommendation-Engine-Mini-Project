@@ -86,31 +86,34 @@ skincare-recommender/
 ├── src/
 │   ├── processing/
 │   │   ├── aggregate_reviews.py    # Concatenate review text per product
-│   │   └── build_profiles.py       # Generate 210 skin-profile queries
+│   │   ├── build_profiles.py       # Generate 210 skin-profile queries
+│   │   └── filter_reviews.py       # Top-5 most-helpful reviews per (product, skin_type)
 │   ├── modeling/
 │   │   ├── fit_tfidf.py            # Fit vectorizer, save .pkl + .npz
 │   │   ├── fit_classifier.py       # Train LR on review-level is_recommended
 │   │   ├── score_products.py       # Per (product, skin_type) LR log-odds → parquet
 │   │   ├── compute_similarity.py   # Cosine sim with category masking
-│   │   └── precompute_all.py       # Blend cosine + classifier, write recommendations.csv
+│   │   ├── precompute_all.py       # Blend cosine + classifier, write recommendations.csv
+│   │   ├── compute_term_overlap.py # Top TF-IDF terms per (profile, product)
+│   │   └── build_summaries.py      # Benefit-oriented per-profile + per-card summaries
 │   ├── database/
 │   │   ├── schema.sql              # PostgreSQL CREATE TABLE + index
-│   │   └── load_rds.py             # Bulk-load products + recs into RDS
+│   │   └── load_rds.py             # Bulk-load all tables into RDS
 │   ├── dashboard/
-│   │   └── app.py                  # Streamlit UI (card grid, star ratings)
+│   │   └── app.py                  # Streamlit UI (card grid, summaries, reviews)
 │   └── utils/
 │       ├── config.py               # --env local|aws path resolution
 │       └── logger.py               # Consistent logging setup
-├── sagemaker/
-│   ├── processing_job.py           # SageMaker Processing Job config
-│   └── batch_transform.py          # Batch Transform config
+├── docs/
+│   └── AWS_DEPLOYMENT.md           # End-to-end AWS setup runbook
+├── scripts/
+│   ├── check_rds.py                # One-shot RDS connectivity test
+│   └── verify_recs.py              # Sanity-check recs landed in RDS
 ├── tests/
 │   └── test_similarity.py          # Ranking + masking smoke tests
 ├── data/
-│   ├── raw/                        # Original SQLite DB
-│   └── processed/                  # Parquets + precomputed CSV
-├── notebooks/
-│   └── eda.ipynb                   # Exploratory data analysis
+│   ├── raw/                        # Original SQLite DB (gitignored)
+│   └── processed/                  # Parquets + precomputed CSV (gitignored)
 ├── requirements.txt
 └── .env.example
 ```
@@ -145,12 +148,23 @@ python -m src.modeling.score_products --env local
 # Step 6 — Precompute blended top-10 recommendations per profile
 python -m src.modeling.precompute_all --env local
 
-# Step 7 — Create RDS schema and load data
+# Step 7 — Filter top-5 most helpful reviews per (product, skin_type)
+python -m src.processing.filter_reviews --env local
+
+# Step 8 — Compute overlap terms driving each (profile, product) match
+python -m src.modeling.compute_term_overlap --env local
+
+# Step 9 — Build benefit-oriented summaries + per-card "why we picked this"
+python -m src.modeling.build_summaries --env local
+
+# Step 10 — Create RDS schema and load all tables
 python -m src.database.load_rds --env local
 
-# Step 8 — Launch dashboard
+# Step 11 — Launch dashboard
 streamlit run src/dashboard/app.py
 ```
+
+For AWS deployment (S3 + RDS + EC2), see **[docs/AWS_DEPLOYMENT.md](docs/AWS_DEPLOYMENT.md)** — a step-by-step runbook.
 
 ## How It Works
 
